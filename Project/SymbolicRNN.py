@@ -39,55 +39,6 @@ def affinelayer(x,W_affine,b_affine):
     return out
 
 
-def organizeAgraph(agraph,idx_to_op,op_to_idx,deterministic):
-    root = agraph.root
-    
-    def preorder(agraph,root,idx_to_op,op_to_idx,deterministic):
-
-        if root:
-            cur_op = root.op
-            # if operator nodes don't have children, convert it to leaf node.
-            if root.left==None and root.right==None:
-                isleaf,iscon = isLeaf(idx_to_op[cur_op])
-                if isleaf==False:
-                    scores = root.scores
-                    scores_np = scores.detach().cpu().numpy()
-                    scores_np[op_to_idx['+']-1] = 0
-                    scores_np[op_to_idx['-']-1] = 0
-                    scores_np[op_to_idx['*']-1] = 0
-                    scores_np[op_to_idx['/']-1] = 0
-                    scores_np/=np.sum(scores_np)
-                    op_array = np.array([1,2,3,4,5,6])
-                    op = np.random.choice(op_array,p = scores_np)
-                    root.op = op
-                    
-                    if op==1:
-                        agraph.constant_count += 1
-                        root.constant_index = agraph.constant_count - 1
-                    
-                    
-            elif root.left==None and root.right!=None:
-                
-                cur_node = binary_node(op_to_idx['c'])
-                root.left = cur_node
-                agraph.constant_count += 1
-                cur_node.constant_index = agraph.constant_count - 1
-                
-            elif root.left!=None and root.right==None:
-                
-                cur_node = binary_node(op_to_idx['c'])
-                root.right = cur_node
-                agraph.constant_count += 1
-                cur_node.constant_index = agraph.constant_count - 1
-                        
-            preorder(agraph,root.left,idx_to_op,op_to_idx,deterministic)
-            preorder(agraph,root.right,idx_to_op,op_to_idx,deterministic)
-        return 
-        
-                
-    preorder(agraph,root,idx_to_op,op_to_idx,deterministic)
-    return 
-
                 
 def isConstant(symbolic_op,agraph,Node):
     if symbolic_op == 'c':
@@ -185,6 +136,10 @@ class SymbolicRNN(nn.Module):
                              device=device, dtype=dtype))
         
         
+        
+        
+        
+        
     def forward(self,deterministic=False):
         
         device, maxiter,order =self.device,self.maxiter,self.order
@@ -213,32 +168,51 @@ class SymbolicRNN(nn.Module):
         for i in range(maxiter):
             
             # Call weight parameters
-            
+            if i==0:
+                W_embed = self.W_embed[:,E*i:E*i+E]
+                Wx = self.Wx[:,order*H*i:order*(H*i+H)]
+                Wh = self.Wh[:,order*H*i:order*(H*i+H)]
+                b =self.b[order*H*i:order*(H*i+H)]
+                W_affine = self.W_affine[:,(D-1)*i:((D-1)*i)+(D-1)]
+                b_affine = self.b_affine[(D-1)*i:((D-1)*i)+(D-1)]
+            else:
+                j = i-1
+                W_embed = self.W_embed[:,E*i:E*i+E] + self.W_embed[:,E*j:E*j+E]
+                Wx = self.Wx[:,order*H*i:order*(H*i+H)] + self.Wx[:,order*H*j:order*(H*j+H)]
+                Wh = self.Wh[:,order*H*i:order*(H*i+H)] + self.Wh[:,order*H*j:order*(H*j+H)] 
+                b = self.b[order*H*i:order*(H*i+H)] + self.b[order*H*j:order*(H*j+H)]
+                W_affine = self.W_affine[:,(D-1)*i:((D-1)*i)+(D-1)] + self.W_affine[:,(D-1)*j:((D-1)*j)+(D-1)]
+                b_affine = self.b_affine[(D-1)*i:((D-1)*i)+(D-1)] + self.b_affine[(D-1)*j:((D-1)*j)+(D-1)]
+                
             
             # RNN forward
             x0 = x0.long()
-            x = OperatorEmbedding(x0,self.W_embed[:,E*i:E*i+E])
             
+            x = OperatorEmbedding(x0,W_embed)
             if self.method == "LSTM":
+                
                 next_h,next_c = lstm_step_forward(x, prev_h, prev_c, 
-                                                  self.Wx[:,order*H*i:order*(H*i+H)],
-                                                  self.Wh[:,order*H*i:order*(H*i+H)], 
-                                                  self.b[order*H*i:order*(H*i+H)])
+                                                  Wx,
+                                                  Wh, 
+                                                  b)
             else:
+                
                 next_h = rnn_step_forward(x, prev_h, 
-                                          self.Wx[:,order*H*i:order*(H*i+H)],
-                                          self.b[order*H*i:order*(H*i+H)],
-                                         self.Wh[:,order*H*i:order*(H*i+H)])
-            
+                                          Wx,
+                                          b,
+                                          Wh)
+                
+        
             y = affinelayer(next_h,
-                            self.W_affine[:,(D-1)*i:((D-1)*i)+(D-1)],
-                            self.b_affine[(D-1)*i:((D-1)*i)+(D-1)])
+                            W_affine,
+                            b_affine)
             
             y = torch.mean(y,axis=0)
            
             softmax = nn.Softmax(dim=0)
             scores = softmax(y)
             
+                
             # convert score to numpy array
             scores_np = scores.detach().cpu().numpy()
             op_array = np.arange(1,len(self.idx_to_op))
@@ -256,7 +230,6 @@ class SymbolicRNN(nn.Module):
                 scores_np/=np.sum(scores_np)
                 op = sampling(op_array,op_count,maximum_op,scores_np,self.idx_to_op)
             
-            #op = sampling(op_array,op_count,maximum_op,scores_np,self.idx_to_op)
             
             if i==0:
                 scores_np[self.op_to_idx['c']-1] = 0
@@ -288,7 +261,7 @@ class SymbolicRNN(nn.Module):
             is_leaf,is_con = isLeaf(symbolic_op)
             if is_leaf == False:
                 op_count += 1
-            
+           
             # Define node
             cur_node = binary_node(op)
             cur_node.idx = i
@@ -299,7 +272,7 @@ class SymbolicRNN(nn.Module):
             node_array.append(cur_node)
             if i==0:
                 agraph.root = cur_node
-                x0 = torch.tensor([op]).to(device)
+                x0 = torch.tensor([op,0]).to(device)
                 preorder.append(cur_node)
             else:
                 if prev_node.left == None:
@@ -309,7 +282,7 @@ class SymbolicRNN(nn.Module):
                     preorder.pop()
                 
                 if is_leaf:
-                    x0 = torch.tensor([prev_node.op,0]).to(device)
+                    x0 = torch.tensor([prev_node.op,op]).to(device)
                 else:
                     x0 = torch.tensor([op,0]).to(device)
                     preorder.append(cur_node)
@@ -336,7 +309,6 @@ class SymbolicRNN(nn.Module):
             constants = localOptimizer(agraph,root,self.X,self.y,self.idx_to_op)
             defineAgraph(agraph,constants,self.idx_to_op)
         
-        #print(stringAgraph(agraph.root,self.idx_to_op))
         
         reward_array = torch.zeros(len(log_p_tau_array))
         for i,root in enumerate(node_array):
@@ -346,32 +318,39 @@ class SymbolicRNN(nn.Module):
         reward_array = reward_array[sort_index]
         p_tau = p_tau[sort_index]
         log_p_tau_array = log_p_tau_array[sort_index]
-        #node_array = node_array[sort_index]
         
-        L = int(self.threshold*reward_array.shape[0])
-        if L==0:
-            L = 1
-        reward_array = reward_array[:L]
-        log_p_tau_array = log_p_tau_array[:L]
-        #node_array = node_array[:,L]
-        sort_index = sort_index[:L]
+        R_y = reward(agraph.root,self.idx_to_op,self.X,self.y,constants)
         
-        
-        loss_array = torch.zeros(len(sort_index))
-        
-        for i,ind in enumerate(sort_index):
-            root = node_array[ind]
-            log_p_tau = log_p_tau_array[i]
-            R = reward(root,self.idx_to_op,self.X,self.y,constants)
-            R = torch.tensor(R)
+        if R_y>0.95:
+            loss = log_p_tau_array[torch.argmax(p_tau)]*R_y
+            cost = torch.max(p_tau)*R_y
+        else:
             
-            loss_array[i] = log_p_tau*R
-         
-        loss = torch.mean(loss_array)
-        R = reward(agraph.root,self.idx_to_op,self.X,self.y,constants)
-        meanR = torch.mean(reward_array)
+            
+            L = int(self.threshold*reward_array.shape[0])
+            if L==0:
+                L = 1
+            reward_array = reward_array[:L]
+            log_p_tau_array = log_p_tau_array[:L]
+            #node_array = node_array[:,L]
+            sort_index = sort_index[:L]
+            
+            loss_array = torch.zeros(len(sort_index))
+            cost_array = torch.zeros(len(sort_index))
+            for i,ind in enumerate(sort_index):
+                root = node_array[ind]
+                log_p_tau = log_p_tau_array[i]
+                p_t = p_tau[i]
+                
+
+                loss_array[i] = log_p_tau*reward_array[i]
+                cost_array[i] = p_t*reward_array[i]
+             
+            loss = torch.mean(loss_array)
+            cost = torch.mean(cost_array)
         
-        return agraph,loss,R,meanR
+        
+        return agraph,loss,R_y,cost
             
 
         

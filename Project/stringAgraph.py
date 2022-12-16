@@ -1,7 +1,7 @@
 def stringAgraph(root,idx_to_op):
 
     if root is None:
-        return '(?)'
+        return ''
     
     if root.left is None and root.right is None:
         if idx_to_op[root.op] =='c':
