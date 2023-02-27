@@ -176,6 +176,7 @@ class SymbolicRNN(nn.Module):
                 W_affine = self.W_affine[:,(D-1)*i:((D-1)*i)+(D-1)]
                 b_affine = self.b_affine[(D-1)*i:((D-1)*i)+(D-1)]
             else:
+                
                 j = i-1
                 W_embed = self.W_embed[:,E*i:E*i+E] + self.W_embed[:,E*j:E*j+E]
                 Wx = self.Wx[:,order*H*i:order*(H*i+H)] + self.Wx[:,order*H*j:order*(H*j+H)]
@@ -282,7 +283,7 @@ class SymbolicRNN(nn.Module):
                     preorder.pop()
                 
                 if is_leaf:
-                    x0 = torch.tensor([prev_node.op,op]).to(device)
+                    x0 = torch.tensor([prev_node.op,prev_node.left.op]).to(device)
                 else:
                     x0 = torch.tensor([op,0]).to(device)
                     preorder.append(cur_node)
@@ -314,40 +315,24 @@ class SymbolicRNN(nn.Module):
         for i,root in enumerate(node_array):
             reward_array[i] = reward(root,self.idx_to_op,self.X,self.y,constants)
         
-        _ , sort_index = torch.sort(-reward_array)
-        reward_array = reward_array[sort_index]
-        p_tau = p_tau[sort_index]
-        log_p_tau_array = log_p_tau_array[sort_index]
         
         R_y = reward(agraph.root,self.idx_to_op,self.X,self.y,constants)
         
-        if R_y>0.95:
-            loss = log_p_tau_array[torch.argmax(p_tau)]*R_y
-            cost = torch.max(p_tau)*R_y
-        else:
-            
-            
-            L = int(self.threshold*reward_array.shape[0])
-            if L==0:
-                L = 1
-            reward_array = reward_array[:L]
-            log_p_tau_array = log_p_tau_array[:L]
-            #node_array = node_array[:,L]
-            sort_index = sort_index[:L]
-            
-            loss_array = torch.zeros(len(sort_index))
-            cost_array = torch.zeros(len(sort_index))
-            for i,ind in enumerate(sort_index):
-                root = node_array[ind]
-                log_p_tau = log_p_tau_array[i]
-                p_t = p_tau[i]
-                
-
-                loss_array[i] = log_p_tau*reward_array[i]
-                cost_array[i] = p_t*reward_array[i]
-             
-            loss = torch.mean(loss_array)
-            cost = torch.mean(cost_array)
+        loss_array = torch.zeros(len(reward_array))
+        cost_array = torch.zeros(len(reward_array))
+        for i,r in enumerate(reward_array):
+            root = node_array[i]
+            log_p_tau = log_p_tau_array[i]
+            p_t = p_tau[i]
+            if r>=self.threshold:
+                loss_array[i] = log_p_tau*r
+                cost_array[i] = p_t*r
+            else:
+                loss_array[i] = log_p_tau*r*0.1
+                cost_array[i] = p_t*r
+         
+        loss = torch.mean(loss_array)
+        cost = torch.mean(cost_array)
         
         
         return agraph,loss,R_y,cost
